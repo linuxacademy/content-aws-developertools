@@ -29,7 +29,6 @@
             "ProjectId": "lab-demo",
             "VpcId": "[VPC-ID]",
             "SubnetId": "[SUBNET-ID]",
-            "KeyPairName": "demo-key-pair",
             "ImageId": "ami-00eb20669e0990cb4",
             "InstanceType": "t2.micro",
             "Stage": "Dev"
