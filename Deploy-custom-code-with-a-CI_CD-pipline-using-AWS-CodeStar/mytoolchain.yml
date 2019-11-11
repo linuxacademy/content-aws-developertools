@@ -1,0 +1,413 @@
+AWSTemplateFormatVersion: 2010-09-09
+
+Description: Toolchain template for AWS CodeStar - Not for release into production accounts.
+
+Parameters:
+  ProjectId:
+    Type: String
+    Description: AWS CodeStar project ID used to name project resources and create roles.
+  InstanceType:
+    Type: String
+    Description: The type of Amazon EC2 Linux instances that will be launched for this project.
+  ImageId:
+    Type: String
+    Description: The Amazon EC2 Linux instance Amazon Machine Image (AMI), which designates the configuration of the new instance.
+  KeyPairName:
+    Type: String
+    Description: The name of an existing Amazon EC2 key pair in the region where the project is created, which you can use to SSH into the new Amazon EC2 Linux instances.
+  VpcId:
+    Type: String
+    Description: The ID of the Amazon Virtual Private Cloud (VPC) to use for Amazon EC2 instances.
+  SubnetId:
+    Type: String
+    Description: The name of the VPC subnet to use for Amazon EC2 instances launched for this project.
+  Stage:
+    Type: String
+    Description: The name for a project pipeline stage, such as Staging or Prod, for which resources are provisioned and deployed.
+
+Resources:
+  CodeCommitRepo:
+    Type: AWS::CodeCommit::Repository
+    Properties:
+      RepositoryDescription: !Sub "${ProjectId} repository"
+      RepositoryName: !Ref ProjectId
+
+  CodeBuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Action: sts:AssumeRole
+          Effect: Allow
+          Principal:
+            Service: codebuild.amazonaws.com
+      Path: /
+      RoleName: !Sub "CodeStarWorker-${ProjectId}-CodeBuild"
+
+  CodeBuildPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyDocument:
+        Statement:
+        - Action:
+          - logs:*
+          - s3:*
+          - kms:GenerateDataKey*
+          - kms:Encrypt
+          - kms:Decrypt
+          Effect: Allow
+          Resource: '*'
+      PolicyName: CodeStarWorkerCodeBuildPolicy
+      Roles:
+      - !Ref 'CodeBuildRole'
+
+  CodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    DependsOn:
+    - CodeBuildPolicy
+    Properties:
+      Artifacts:
+        Packaging: zip
+        Type: codepipeline
+      Description: !Sub "AWS CodeStar created CodeBuild Project for ${ProjectId}"
+      Environment:
+        ComputeType: small
+        EnvironmentVariables:
+        - Name: S3_BUCKET
+          Value: !Ref 'S3Bucket'
+        - Value: !Ref ProjectId
+          Name: PROJECT_ID
+        - Value: !Ref 'AWS::AccountId'
+          Name: ACCOUNT_ID
+        - Value: !Ref 'AWS::Partition'
+          Name: PARTITION
+        Image: aws/codebuild/standard:2.0
+        Type: LINUX_CONTAINER
+      Name: !Ref 'ProjectId'
+      ServiceRole: !Ref 'CodeBuildRole'
+      Source:
+        Type: codepipeline
+
+  CloudFormationTrustRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Action: sts:AssumeRole
+          Effect: Allow
+          Principal:
+            Service:
+            - cloudformation.amazonaws.com
+      Path: /
+      Policies:
+      - PolicyDocument:
+          Statement:
+          - Action:
+            - codecommit:*
+            - codestar:*
+            - codebuild:*
+            - codedeploy:*
+            - s3:*
+            - ec2:*
+            - cloudformation:*
+            - iam:*
+            Effect: Allow
+            Resource: '*'
+        PolicyName: CloudFormationRolePolicy
+      RoleName: !Sub "CodeStarWorker-${ProjectId}-CFRole"
+
+  S3ArtifactBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref 'S3Bucket'
+      PolicyDocument:
+        Id: SSEAndSSLPolicy
+        Statement:
+        - Action:
+          - s3:GetObject
+          - s3:GetObjectVersion
+          - s3:GetBucketVersioning
+          Condition:
+            Bool:
+              aws:SecureTransport: false
+          Effect: Allow
+          Principal:
+            AWS:
+            - !GetAtt 'CodePipelineTrustRole.Arn'
+            - !GetAtt 'CodeBuildRole.Arn'
+            - !GetAtt 'CloudFormationTrustRole.Arn'
+          Resource:
+          - !Sub 'arn:aws:s3:::${S3Bucket}'
+          - !Sub 'arn:aws:s3:::${S3Bucket}/*'
+          Sid: WhitelistedGet
+        - Action:
+          - s3:PutObject
+          Effect: Allow
+          Principal:
+            AWS:
+            - !GetAtt 'CodePipelineTrustRole.Arn'
+            - !GetAtt 'CodeBuildRole.Arn'
+          Resource:
+          - !Sub 'arn:aws:s3:::${S3Bucket}'
+          - !Sub 'arn:aws:s3:::${S3Bucket}/*'
+          Sid: WhitelistedPut
+        Version: 2012-10-17
+
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    Properties:
+      BucketName: !Sub "aws-codestar-${AWS::Region}-${AWS::AccountId}-${ProjectId}"
+      Tags:
+      - Key: Name
+        Value: !Sub "${ProjectId}-S3Bucket"
+      VersioningConfiguration:
+        Status: Enabled
+
+  CodePipelineTrustRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Action: sts:AssumeRole
+          Effect: Allow
+          Principal:
+            Service:
+            - codepipeline.amazonaws.com
+          Sid: 1
+      Path: /
+      Policies:
+      - PolicyDocument:
+          Statement:
+          - Action:
+            - codecommit:*
+            - codestar:*
+            - codebuild:*
+            - codedeploy:*
+            - s3:*
+            - ec2:*
+            - cloudformation:*
+            - iam:*
+            Effect: Allow
+            Resource: '*'
+          - Action:
+            - iam:PassRole
+            Effect: Allow
+            Resource:
+            - !GetAtt 'CloudFormationTrustRole.Arn'
+        PolicyName: CodeStarWorkerCodePipelineRolePolicy
+      RoleName: !Sub "CodeStarWorker-${ProjectId}-CodePipeline"
+
+  ProjectPipeline:
+    Type: AWS::CodePipeline::Pipeline
+    DependsOn:
+    - CodePipelineTrustRole
+    - S3Bucket
+    - CodeBuildProject
+    - CloudFormationTrustRole
+    Properties:
+      ArtifactStore:
+        Location: !Ref 'S3Bucket'
+        Type: S3
+      Name: !Sub "${ProjectId}-Pipeline"
+      RoleArn: !GetAtt 'CodePipelineTrustRole.Arn'
+      Stages:
+      - Actions:
+        - ActionTypeId:
+            Category: Source
+            Owner: AWS
+            Provider: CodeCommit
+            Version: 1
+          Configuration:
+            BranchName: master
+            PollForSourceChanges: false
+            RepositoryName: !Ref 'ProjectId'
+          InputArtifacts: []
+          Name: ApplicationSource
+          OutputArtifacts:
+          - Name: !Sub "${ProjectId}-SourceArtifact"
+          RunOrder: 1
+        Name: Source
+      - Actions:
+        - ActionTypeId:
+            Category: Build
+            Owner: AWS
+            Provider: CodeBuild
+            Version: 1
+          Configuration:
+            ProjectName: !Ref 'ProjectId'
+          InputArtifacts:
+          - Name: !Sub "${ProjectId}-SourceArtifact"
+          Name: PackageExport
+          OutputArtifacts:
+          - Name: !Sub "${ProjectId}-BuildArtifact"
+          RunOrder: 1
+        Name: Build
+      - Actions:
+        - ActionTypeId:
+            Owner: AWS
+            Category: Deploy
+            Version: 1
+            Provider: CloudFormation
+          Configuration:
+            TemplatePath: !Sub '${ProjectId}-BuildArtifact::template.yml'
+            ActionMode: CHANGE_SET_REPLACE
+            Capabilities: CAPABILITY_NAMED_IAM
+            ParameterOverrides: !Sub |
+              {
+                "ProjectId":"${ProjectId}",
+                "InstanceType":"${InstanceType}",
+                "ImageId":"${ImageId}",
+                "KeyPairName":"${KeyPairName}",
+                "SubnetId":"${SubnetId}",
+                "VpcId":"${VpcId}",
+                "Stage":"${Stage}"
+              }
+            TemplateConfiguration: !Sub '${ProjectId}-BuildArtifact::template-configuration.json'
+            ChangeSetName: pipeline-changeset
+            RoleArn: !GetAtt 
+              - CloudFormationTrustRole
+              - Arn
+            StackName: !Sub 'awscodestar-${ProjectId}-infrastructure'
+          InputArtifacts:
+            - Name: !Sub '${ProjectId}-BuildArtifact'
+          OutputArtifacts: []
+          RunOrder: 1
+          Name: GenerateChangeSet
+        - ActionTypeId:
+            Owner: AWS
+            Category: Deploy
+            Version: 1
+            Provider: CloudFormation
+          Configuration:
+            ActionMode: CHANGE_SET_EXECUTE
+            ChangeSetName: pipeline-changeset
+            StackName: !Sub 'awscodestar-${ProjectId}-infrastructure'
+          InputArtifacts: []
+          OutputArtifacts: []
+          RunOrder: 2
+          Name: ExecuteChangeSet
+        - ActionTypeId:
+            Owner: AWS
+            Category: Deploy
+            Version: 1
+            Provider: CodeDeploy
+          Configuration:
+            ApplicationName: !Ref CodeDeployApplication
+            DeploymentGroupName: !Ref DeploymentGroup
+          InputArtifacts:
+            - Name: !Sub '${ProjectId}-BuildArtifact'
+          RunOrder: 3
+          Name: Deploy
+        Name: Deploy
+
+  SourceEvent:
+    Type: AWS::Events::Rule
+    Properties:
+      EventPattern:
+        detail:
+          event:
+          - referenceCreated
+          - referenceUpdated
+          referenceName:
+          - master
+          referenceType:
+          - branch
+        detail-type:
+        - CodeCommit Repository State Change
+        resources:
+        - !GetAtt 'CodeCommitRepo.Arn'
+        source:
+        - aws.codecommit
+      Name: !Sub "awscodestar-${ProjectId}-SourceEvent"
+      State: ENABLED
+      Targets:
+      - Arn: !Sub 'arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${ProjectId}-Pipeline'
+        Id: ProjectPipelineTarget
+        RoleArn: !GetAtt 'SourceEventRole.Arn'
+
+  SourceEventRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Action: sts:AssumeRole
+          Effect: Allow
+          Principal:
+            Service:
+            - events.amazonaws.com
+          Sid: 1
+      Policies:
+      - PolicyDocument:
+          Statement:
+          - Action:
+            - codepipeline:StartPipelineExecution
+            Effect: Allow
+            Resource:
+            - !Sub "arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${ProjectId}-Pipeline"
+        PolicyName: CodeStarWorkerCloudWatchEventPolicy
+      RoleName: !Sub "CodeStarWorker-${ProjectId}-event-rule"
+
+  CodeDeployApplication:
+    Type: 'AWS::CodeDeploy::Application'
+    Description: Configuring AWS CodeDeploy for project application
+    Properties:
+      ApplicationName: !Ref ProjectId
+
+  DeploymentGroup:
+    Type: 'AWS::CodeDeploy::DeploymentGroup'
+    Description: Creating AWS CodeDeploy deployment groups for project application
+    Properties:
+      ApplicationName: !Ref CodeDeployApplication
+      ServiceRoleArn: !GetAtt 
+        - ToolChainRole
+        - Arn
+      DeploymentConfigName: CodeDeployDefault.OneAtATime
+      DeploymentGroupName: !Join 
+        - ''
+        - - !Ref ProjectId
+          - '-Env'
+      Ec2TagFilters:
+        - Type: KEY_AND_VALUE
+          Value: !Join 
+            - ''
+            - - !Ref ProjectId
+              - '-WebApp'
+              - !Ref Stage
+          Key: Environment
+
+  ToolChainRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      Path: /
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AWSCodeCommitFullAccess'
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AWSCodeBuildAdminAccess'
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AWSCodeDeployFullAccess'
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AWSCodePipelineFullAccess'
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AWSElasticBeanstalkFullAccess'
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AWSLambdaFullAccess'
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AWSCodeStarFullAccess'
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/CloudWatchEventsFullAccess'
+      RoleName: !Sub 'CodeStarWorker-${ProjectId}-ToolChain'
+      Policies:
+        - PolicyName: ToolChainWorkerPolicy
+          PolicyDocument:
+            Statement:
+              - Action:
+                  - 'kms:GenerateDataKey*'
+                  - 'kms:Encrypt'
+                  - 'kms:Decrypt'
+                Resource: '*'
+                Effect: Allow
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: 'sts:AssumeRole'
+            Effect: Allow
+            Principal:
+              Service:
+                - codebuild.amazonaws.com
+                - codedeploy.amazonaws.com
+                - codepipeline.amazonaws.com
+                - codestar.amazonaws.com
+                - events.amazonaws.com

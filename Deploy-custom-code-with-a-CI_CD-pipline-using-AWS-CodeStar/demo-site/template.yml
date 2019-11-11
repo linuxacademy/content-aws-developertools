@@ -1,0 +1,144 @@
+AWSTemplateFormatVersion: 2010-09-09
+
+Conditions:
+  IsBurstableInstanceType: !Equals [!Select [0, !Split ['.', !Ref InstanceType]], t2]
+
+Transform:
+- AWS::CodeStar
+
+Parameters:
+  ProjectId:
+    Type: String
+    Description: AWS CodeStar project ID used to name project resources and create roles.
+  InstanceType:
+    Type: String
+    Description: The type of Amazon EC2 Linux instances that will be launched for this project.
+  ImageId:
+    Type: String
+    Description: The Amazon EC2 Linux instance Amazon Machine Image (AMI), which designates the configuration of the new instance.
+  KeyPairName:
+    Type: String
+    Description: The name of an existing Amazon EC2 key pair in the region where the project is created, which you can use to SSH into the new Amazon EC2 Linux instances.
+  VpcId:
+    Type: String
+    Description: The ID of the Amazon Virtual Private Cloud (VPC) to use for Amazon EC2 instances.
+  SubnetId:
+    Type: String
+    Description: The name of the VPC subnet to use for Amazon EC2 instances launched for this project.
+  Stage:
+    Type: String
+    Description: The name for a project pipeline stage, such as Staging or Prod, for which resources are provisioned and deployed.
+
+Resources:
+  WebApp01:
+    Type: AWS::EC2::Instance
+    Properties:
+      CreditSpecification:
+        CPUCredits: !If [IsBurstableInstanceType, unlimited, !Ref 'AWS::NoValue']
+      IamInstanceProfile: !Ref 'WebAppInstanceProfile'
+      ImageId: !Ref 'ImageId'
+      InstanceType: !Ref 'InstanceType'
+      KeyName: !Ref 'KeyPairName'
+      NetworkInterfaces:
+      - AssociatePublicIpAddress: true
+        DeviceIndex: 0
+        GroupSet:
+        - !Ref 'WebAppSG'
+        SubnetId: !Ref 'SubnetId'
+      Tags:
+      - Key: Environment
+        Value: !Sub '${ProjectId}-WebApp${Stage}'
+      - Key: Name
+        Value: !Sub '${ProjectId}-WebApp${Stage}'
+      UserData:
+        Fn::Base64:
+          Fn::Sub: |
+            #!/bin/bash -ex
+            # Install the AWS CodeDeploy Agent.
+            cd /home/ec2-user/
+            wget https://aws-codedeploy-${AWS::Region}.s3.amazonaws.com/latest/codedeploy-agent.noarch.rpm
+            yum -y install codedeploy-agent.noarch.rpm
+            # Install the Amazon CloudWatch Logs Agent.
+            wget https://s3.amazonaws.com/aws-cloudwatch/downloads/latest/awslogs-agent-setup.py
+            wget https://s3.amazonaws.com/aws-codedeploy-us-east-1/cloudwatch/codedeploy_logs.conf
+            wget https://s3.amazonaws.com/aws-codedeploy-us-east-1/cloudwatch/awslogs.conf
+            chmod +x ./awslogs-agent-setup.py
+            python awslogs-agent-setup.py -n -r ${AWS::Region} -c ./awslogs.conf
+            mkdir -p /var/awslogs/etc/config
+            cp codedeploy_logs.conf /var/awslogs/etc/config/
+            service awslogs restart
+
+  WebAppSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Enable HTTP access via port 80 and SSH access via port 22.
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: '80'
+        ToPort: '80'
+        CidrIp: 0.0.0.0/0
+      - IpProtocol: tcp
+        FromPort: '22'
+        ToPort: '22'
+        CidrIp: 0.0.0.0/0
+      VpcId: !Ref 'VpcId'
+
+  WebAppInstanceProfile:
+    Type: 'AWS::IAM::InstanceProfile'
+    Properties:
+      Path: /
+      Roles:
+        - !Ref WebAppRole
+
+  WebAppRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      Path: /
+      RoleName: !Sub 'CodeStarWorker-${ProjectId}-WebApp'
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: 'sts:AssumeRole'
+            Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Sid: ''
+
+  WebAppRolePolicies:
+    Type: 'AWS::IAM::Policy'
+    Properties:
+      PolicyName: CodeStarWorkerBackendPolicy
+      PolicyDocument:
+        Statement:
+          - Action:
+              - 'ec2:Describe*'
+            Resource:
+              - '*'
+            Effect: Allow
+          - Action:
+              - 's3:Get*'
+              - 's3:List*'
+            Resource:
+              - '*'
+            Effect: Allow
+          - Action:
+              - 'cloudformation:DescribeStackResources'
+            Resource:
+              - !Ref 'AWS::StackId'
+            Effect: Allow
+          - Action:
+              - 'logs:CreateLogGroup'
+              - 'logs:CreateLogStream'
+              - 'logs:PutLogEvents'
+              - 'logs:DescribeLogStreams'
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:logs:*:*:*'
+            Effect: Allow
+          - Action:
+              - 'codedeploy:BatchGet*'
+              - 'codedeploy:Get*'
+              - 'codedeploy:List*'
+            Resource:
+              - '*'
+            Effect: Allow
+      Roles:
+        - !Ref WebAppRole

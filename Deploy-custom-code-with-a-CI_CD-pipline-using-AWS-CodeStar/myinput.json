@@ -1,0 +1,38 @@
+{
+    "name": "Lab Demo", 
+    "id": "lab-demo", 
+    "description": "Project created with the CLI in a Linux Academy Lab", 
+    "sourceCode": [
+        {
+            "source": {
+                "s3": {
+                    "bucketName": "[BUCKET-NAME]", 
+                    "bucketKey": "mysrc.zip"
+                }
+            }, 
+            "destination": {
+                "codeCommit": {
+                    "name": "test-f"
+                }
+            }
+        }
+    ], 
+    "toolchain": {
+        "source": {
+            "s3": {
+                "bucketName": "[BUCKET-NAME]", 
+                "bucketKey": "mytoolchain.yml"
+            }
+        },
+        "roleArn": "[AWS-CODESTAR-SERVICE-ROLE]", 
+        "stackParameters": {
+            "ProjectId": "lab-demo",
+            "VpcId": "[VPC-ID]",
+            "SubnetId": "[SUBNET-ID]",
+            "KeyPairName": "demo-key-pair",
+            "ImageId": "ami-00eb20669e0990cb4",
+            "InstanceType": "t2.micro",
+            "Stage": "Dev"
+        }
+    }
+}
