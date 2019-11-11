@@ -12,7 +12,7 @@
             }, 
             "destination": {
                 "codeCommit": {
-                    "name": "test-f"
+                    "name": "lab-demo"
                 }
             }
         }
