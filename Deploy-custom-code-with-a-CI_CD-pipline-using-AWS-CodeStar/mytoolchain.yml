@@ -258,7 +258,6 @@ Resources:
                 "ProjectId":"${ProjectId}",
                 "InstanceType":"${InstanceType}",
                 "ImageId":"${ImageId}",
-                "KeyPairName":"${KeyPairName}",
                 "SubnetId":"${SubnetId}",
                 "VpcId":"${VpcId}",
                 "Stage":"${Stage}"
