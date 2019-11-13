@@ -12,9 +12,9 @@ Parameters:
   ImageId:
     Type: String
     Description: The Amazon EC2 Linux instance Amazon Machine Image (AMI), which designates the configuration of the new instance.
-  KeyPairName:
-    Type: String
-    Description: The name of an existing Amazon EC2 key pair in the region where the project is created, which you can use to SSH into the new Amazon EC2 Linux instances.
+  # KeyPairName:
+  #   Type: String
+  #   Description: The name of an existing Amazon EC2 key pair in the region where the project is created, which you can use to SSH into the new Amazon EC2 Linux instances.
   VpcId:
     Type: String
     Description: The ID of the Amazon Virtual Private Cloud (VPC) to use for Amazon EC2 instances.
